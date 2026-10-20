@@ -14,14 +14,34 @@ This repo provides the fix: a pure-Python, single-file patch that teaches the GL
 cache builder to give the drafter's sliding-window layers their own group. No rebuild,
 no kernel changes. Running in production on 4x A100-80GB for weeks under real agent traffic.
 
+## Status (2026-10-20)
+
+- **Upstream:** the GLM-5.3-specific builder this patch targets was removed upstream
+  (#57169 + #61183), and `is_eagle_group` is now derived from explicit draft-layer tags
+  (#61455, merged 2026-10-17; regression test #62180). Our upstream PR #59656 was closed
+  as superseded, and the follow-up issue #61443 was closed by #61455. The original
+  `NotImplementedError` no longer reproduces on current upstream `main`.
+- **So this patch is needed only on pre-#57169 bases** — in practice the
+  `wtdcode/vllm-backport` fork and its `v0.13.1` / `latest-sm80` images.
+  Fork PR: https://github.com/wtdcode/vllm-backport/pull/120 (open, awaiting a target
+  branch/tag).
+- **Patches re-verified `git apply`-clean on 2026-10-20** against the fork's `master`
+  (`29e66dad`) and against the `v0.13.1` tag: 01 clean on both, 02 clean, 03 clean with
+  one hunk offset in the test file.
+- **Ampere note:** upstream still supports sm80 as a build target and ships sm80
+  wheels/images. What is missing upstream is the sm80 DSA / sparse-MLA attention path for
+  GLM-5.3-Flash / DeepSeek-V4-Flash (vllm-project/vllm#50576) — not the quantization
+  format: NVFP4 weights do run on Ampere via the weight-only W4A16 Marlin fallback, while
+  native FP4 compute, FP4 KV cache and FP4 attention stay Blackwell-only.
+
 ## Who needs this
 
 | Your stack | Do you need it? |
 |---|---|
 | wtdcode/vllm-backport (~v0.13.0 base) + DFlash2/EAGLE drafter on A100 | **yes** — without it, startup fails |
 | any vLLM base whose `kv_cache_utils.py` still has `_get_kv_cache_groups_glm5_next` (i.e. before upstream #57169, merged 2026-10-10) | yes |
-| upstream main from 2026-10-10+ (Hopper/Blackwell) | no — #57169 landed a generic packed layout instead. Note you may still see the un-annotated draft group warning, vllm-project/vllm#61443 |
-| plain upstream main on A100 | out of reach for now — no sm80 DSA backends upstream (see vllm-project/vllm#50576); that's why the fork exists |
+| upstream main from 2026-10-10+ (Hopper/Blackwell) | no — #57169 landed a generic packed layout instead, and the un-annotated draft group warning is gone since #61455 (merged 2026-10-17) |
+| plain upstream main on A100 | out of reach for now — no sm80 DSA backends upstream (see vllm-project/vllm#50576); that's why the fork exists. Note: upstream *does* support NVFP4/Ampere for *weights* (weight-only W4A16 via Marlin fallback, `docs/features/quantization/modelopt.md`), but native FP4 compute, FP4 KV cache and FP4 attention stay Blackwell-only — and the missing piece for GLM-5.3-Flash is the sm80 DSA/sparse-MLA attention backend, not the quantization format |
 
 ## The bug
 
@@ -48,7 +68,9 @@ MLA-family specs (the indexer) refuse. Startup dies.
   (RED on unpatched tree: no draft group / gate accepts non-EAGLE configs).
 
 All three are `git apply`-clean on the fork's `master` (verified byte-for-byte against a
-production tree that has run for weeks).
+production tree that has run for weeks). Re-verified 2026-10-20 against the fork's current
+`master` (`29e66dad`) and against the `v0.13.1` tag: all three still apply (01 clean on
+both, 02 clean, 03 clean with a hunk offset in the test file).
 
 ## Install
 
@@ -97,8 +119,15 @@ One prod gotcha: the GLM block is mamba-aligned (1280 tokens at TP4 here), so
   landed a generic version for post-Oct-10 bases).
 - vllm-project/vllm#57169 / #61183 — upstream generic packed KV layout (why this patch is
   only needed on pre-#57169 bases like the fork).
-- vllm-project/vllm#61443 — follow-up: on post-#57169 bases the dflash draft group is not
-  annotated `is_eagle_group` (warning at startup; block-drop disabled).
-- vllm-project/vllm#50576 — the SM8x support hub.
+- vllm-project/vllm#61443 — follow-up: on post-#57169 bases the dflash draft group was not
+  annotated `is_eagle_group` (warning at startup; block-drop disabled). **Fixed upstream by
+  #61455** (explicit draft-layer tags, merged 2026-10-17); regression test for this exact
+  GLM-5.3-Flash + DFlash2 shape is in #62180.
+- vllm-project/vllm#61455 / #62180 — upstream replacement of the `is_eagle_group` heuristics
+  with explicit draft-layer tags, plus the regression test.
+- vllm-project/vllm#50576 — the SM8x support hub. Upstream still ships sm80 wheels and
+  images (`CUDA_ARCH_X86` includes 8.0/8.6) and still supports Ampere as a target, but has
+  no sm80 DSA/sparse-MLA backends for GLM-5.3-Flash / DeepSeek-V4-Flash — that is why the
+  fork (and this patch) still exist.
 
 Licensed under Apache-2.0, same as vLLM.
