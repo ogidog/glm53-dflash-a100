@@ -14,7 +14,7 @@ This repo provides the fix: a pure-Python, single-file patch that teaches the GL
 cache builder to give the drafter's sliding-window layers their own group. No rebuild,
 no kernel changes. Running in production on 4x A100-80GB for weeks under real agent traffic.
 
-## Status (2026-10-20)
+## Status (2026-10-24)
 
 - **Upstream:** the GLM-5.3-specific builder this patch targets was removed upstream
   (#57169 + #61183), and `is_eagle_group` is now derived from explicit draft-layer tags
@@ -28,6 +28,14 @@ no kernel changes. Running in production on 4x A100-80GB for weeks under real ag
 - **Patches re-verified `git apply`-clean on 2026-10-20** against the fork's `master`
   (`29e66dad`) and against the `v0.13.1` tag: 01 clean on both, 02 clean, 03 clean with
   one hunk offset in the test file.
+- **Repro refreshed 2026-10-24:** `repro_glm5_drafter.py` is now a version-adaptive CPU
+  probe — verified live to print `BUG REPRODUCED` on the unpatched fork base and
+  `FIX VERIFIED` (8/8) on current upstream `main`.
+- **Another community sm80 stack (2026-10-24):** fixes the KV-planner side but still
+  cannot load GLM-5.3-Flash on sm80 — its minimal build excludes DeepGEMM, which the DSA
+  sparse indexer hard-requires (`Sparse Attention Indexer CUDA op requires DeepGEMM to
+  be installed`). Analysis:
+  https://github.com/vllm-project/vllm/issues/50576#issuecomment-6371250023
 - **Ampere note:** upstream still supports sm80 as a build target and ships sm80
   wheels/images. What is missing upstream is the sm80 DSA / sparse-MLA attention path for
   GLM-5.3-Flash / DeepSeek-V4-Flash (vllm-project/vllm#50576) — not the quantization
@@ -90,8 +98,10 @@ Option B — no-tree overlay (what we run in prod): copy the two patched files i
 
 ```bash
 CUDA_VISIBLE_DEVICES="" PYTHONPATH=/path/to/vllm python repro_glm5_drafter.py
-# unpatched: RED — builder declines, generic path raises the indexer padding error
-# patched:   GREEN — 1 draft group, is_eagle_group, no region overlaps
+# version-adaptive probe — runs on the fork base AND on post-#61455 trees:
+#   fork base, unpatched: "BUG REPRODUCED" — builder declines the drafter layers
+#   fork base, patched:   "FIX PRESENT"    — drafter gets its own group
+#   upstream main:        "FIX VERIFIED"   — 8/8 matrix cases, draft group isolated
 ```
 
 Unit tests (need the fork's venv):
@@ -109,8 +119,11 @@ One prod gotcha: the GLM block is mamba-aligned (1280 tokens at TP4 here), so
 ## Production numbers (4x A100-80GB, TP4+EP4)
 
 - GLM-5.3-Flash-AWQ-W4A16, ctx 262144, KV 1.38M tokens, DFlash2 `num_speculative_tokens=8`
-- decode ~90–180 tok/s single-stream (~109 avg on agent traffic)
-- spec acceptance 17–22% agent traffic / 26–58% long essays; stable for weeks
+- decode (pure-decode windows from the server log, ~3.8k samples of agent traffic):
+  single-stream p50 ~95 / p99 ~194 / peak ~246 tok/s; ~360 tok/s aggregate at 5
+  concurrent full-context streams (~70 tok/s per stream)
+- spec decode: 29.2% token-weighted draft acceptance, mean acceptance length 3.5
+  (per-window avg 31.6%); stable for weeks
 - prefix caching, reasoning & tool parsers, and KV connector unaffected
 
 ## Upstream trail
